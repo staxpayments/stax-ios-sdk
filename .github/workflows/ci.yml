@@ -6,24 +6,60 @@ on:
   pull_request:
     branches: [master, develop, "release/**"]
 
+# One Mac runner is shared with the Android SDK. A new push to the same ref
+# supersedes the run still queued or building for the previous one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     name: Build and Test
-    runs-on: macos-15
+    # The GHE tenant has no GitHub-hosted macOS runners. `macos-*` labels never
+    # schedule; jobs sat 15 minutes and were cancelled with no steps run.
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         destination:
-          - 'platform=iOS Simulator,name=iPhone 16,OS=latest'
-          - 'platform=iOS Simulator,name=iPad (10th generation),OS=latest'
+          # No OS= pin: the box has Xcode 26.6 but only the iOS 26.5 runtime, and
+          # OS=latest resolves to the SDK version, matching nothing.
+          - 'platform=iOS Simulator,name=iPhone 17 Pro'
+    env:
+      # The self-hosted Mac starts jobs with no locale; Ruby-based tools then
+      # crash on ASCII-8BIT strings.
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
     steps:
+      - name: Toolchain inventory
+        # Persistent runner: log what is installed before anything can fail,
+        # so a bad Xcode or missing simulator runtime is read, not guessed.
+        # Never fails the job.
+        run: |
+          sw_vers; uname -m
+          ls -d /Applications/Xcode*.app 2>/dev/null || echo "no Xcode bundles in /Applications"
+          xcode-select -p
+          xcodebuild -version 2>&1 | head -2 || true
+          xcrun simctl list runtimes 2>&1 | grep -E 'iOS|error' || echo "no simulator runtimes"
+          xcrun simctl list devices available 2>&1 | grep -E 'iPhone|iPad' | head -20 || true
+          df -h / | tail -1
+
       - uses: actions/checkout@v4
+
+      - name: Pre-boot simulator
+        # Headless runner session: booting first makes the device visible to
+        # xcodebuild's destination lookup and overlaps boot with the build.
+        run: xcrun simctl boot "iPhone 17 Pro" || true
+
       - name: Build
         run: |
           xcodebuild build-for-testing \
             -workspace fattmerchant-ios-sdk.xcworkspace \
             -scheme fattmerchant-ios-sdk \
             -destination '${{ matrix.destination }}'
+
       - name: Test
         run: |
           xcodebuild test-without-building \
@@ -33,11 +69,29 @@ jobs:
 
   deploy:
     name: Deploy to CocoaPods
-    runs-on: macos-15
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 30
     needs: build-and-test
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    env:
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
     steps:
+      - name: Bootstrap CocoaPods
+        # Homebrew lives in /opt/homebrew but is not on the runner's PATH.
+        # The install is skipped once present.
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
+        run: |
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          export PATH="/opt/homebrew/bin:$PATH"
+          brew list --versions cocoapods >/dev/null 2>&1 || brew install cocoapods
+          pod --version
+
       - uses: actions/checkout@v4
+
       - name: Deploy to CocoaPods
         uses: michaelhenry/deploy-to-cocoapods-github-action@1.0.10
         with:
