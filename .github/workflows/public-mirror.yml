@@ -1,0 +1,24 @@
+# One-way sync to github.com/staxpayments/stax-ios-sdk (CLD-334, CMD-5605). The tenant
+# repo is canonical; the mirrored copy of this file never runs there (Actions are off).
+name: public-mirror
+on:
+  push:
+    branches: [master]
+    tags: ['*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: push only this tag (seeding)
+        required: false
+        default: ""
+permissions:
+  contents: read
+jobs:
+  mirror:
+    if: github.server_url != 'https://github.com'
+    uses: stax-core/cicd-actions/.github/workflows/public-mirror.yaml@v2
+    with:
+      mirror_org: staxpayments
+      branches: master
+      tag: ${{ inputs.tag || '' }}
+    secrets: inherit
