@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [master, develop, "release/**"]
 
+permissions:
+  contents: read
+
 # One Mac runner is shared with the Android SDK. A new push to the same ref
 # supersedes the run still queued or building for the previous one.
 concurrency:
